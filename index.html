@@ -5,14 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>🏛️ Dashboard Immobilier Marseille 2025</title>
 
-  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-
-  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <style>
@@ -51,6 +48,7 @@
       background:#dc3545; color:#fff; padding:12px 28px; border-radius:10px; display:none;
       text-align:center; max-width:85%; box-shadow:0 6px 18px rgba(0,0,0,0.2); font-weight:500;
     }
+    #error-msg code { background:rgba(0,0,0,0.2); padding:2px 6px; border-radius:4px; font-size:0.85em; }
     .leaflet-popup-content { font-size:0.85rem; min-width:220px; max-width:300px; }
     .popup-row { display:flex; justify-content:space-between; padding:2px 0; gap:12px; }
     .popup-row .label { color:#4a5d6e; }
@@ -134,6 +132,14 @@
 
   <script>
     // ================================================================
+    // ⚙️ CONFIGURATION — Modifie cette ligne pour changer de source
+    // ================================================================
+    // '' (vide)              → fichiers locaux dans data/
+    // 'https://...r2.dev'    → Cloudflare R2
+    // 'https://cdn.jsdelivr.net/gh/gunout/marseille-data@main'  → jsDelivr
+    const CDN_BASE = '';
+
+    // ================================================================
     // 1. DONNÉES IMMOBILIÈRES MARSEILLE (statistiques DVF simulées)
     // ================================================================
     const STATS_ARRONDISSEMENTS = {
@@ -162,7 +168,7 @@
     let currentParcelPoints = [];
 
     // ================================================================
-    // 3. CARTE LEAFLET - Centrée sur Marseille
+    // 3. CARTE LEAFLET
     // ================================================================
     const map = L.map('map', { center: [43.2965, 5.3698], zoom: 12, zoomControl: true });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -174,34 +180,65 @@
     let transactionLayer = null;
 
     // ================================================================
-    // 4. CHARGEMENT DES PARCELLES
+    // 4. CHARGEMENT ROBUSTE DES DONNÉES (gzip OU JSON brut OU pointeur LFS)
     // ================================================================
     async function fetchJSON(url) {
+      console.log(`📥 Chargement : ${url}`);
       try {
-        console.log(`📥 Chargement : ${url}`);
         const resp = await fetch(url);
         if (!resp.ok) {
-          console.warn(`❌ Échec : ${url} (status ${resp.status})`);
+          console.warn(`❌ HTTP ${resp.status} pour ${url}`);
           return null;
         }
-        if (url.endsWith('.gz')) {
-          const arrayBuffer = await resp.arrayBuffer();
-          const bytes = new Uint8Array(arrayBuffer);
+
+        const buffer = await resp.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        const head = bytes.slice(0, 4);
+
+        // Détection du type de fichier
+        const isGzip = head[0] === 0x1f && head[1] === 0x8b;
+        const isJson = head[0] === 0x7b || head[0] === 0x5b; // '{' ou '['
+        const isLfsPointer = !isGzip && !isJson; // probablement un pointeur LFS texte
+
+        // Cas 1 : GZIP → décompression
+        if (isGzip) {
           try {
             const ds = new DecompressionStream('gzip');
             const stream = new Blob([bytes]).stream().pipeThrough(ds);
             const text = await new Response(stream).text();
             return JSON.parse(text);
           } catch (e) {
-            const blob = new Blob([bytes], { type: 'application/gzip' });
-            const decompressed = await new Response(blob).text();
-            return JSON.parse(decompressed);
+            console.warn('❌ Décompression gzip échouée :', e.message);
+            throw new Error('Le fichier gzip est corrompu ou mal servi par le serveur.');
           }
         }
-        return await resp.json();
-      } catch (e) {
-        console.warn(`❌ Erreur pour ${url} :`, e);
+
+        // Cas 2 : JSON brut → parse direct
+        if (isJson) {
+          try {
+            const text = new TextDecoder().decode(bytes);
+            return JSON.parse(text);
+          } catch (e) {
+            console.warn('❌ Parsing JSON échoué :', e.message);
+            return null;
+          }
+        }
+
+        // Cas 3 : Pointeur LFS → erreur explicite
+        if (isLfsPointer) {
+          const preview = new TextDecoder().decode(bytes.slice(0, 100));
+          console.warn('⚠️ Pointeur LFS détecté :', preview);
+          throw new Error(
+            'Ce serveur ne sert pas les fichiers Git LFS. ' +
+            'Utilise Cloudflare Pages, ou configure CDN_BASE dans index.html.'
+          );
+        }
+
+        console.warn('❓ Format inconnu :', head);
         return null;
+      } catch (e) {
+        console.warn(`❌ Erreur pour ${url} :`, e.message);
+        throw e;
       }
     }
 
@@ -234,9 +271,12 @@
       try {
         document.getElementById('loading').style.display = 'flex';
         document.getElementById('error-msg').style.display = 'none';
-        const filename = `data/cadastre-${arrondissement}-parcelles.json.gz`;
+
+        const base = CDN_BASE || 'data';
+        const filename = `${base}/cadastre-${arrondissement}-parcelles.json.gz`;
+
         const data = await fetchJSON(filename);
-        if (!data) throw new Error(`Fichier ${filename} introuvable.`);
+        if (!data) throw new Error(`Fichier ${filename} introuvable ou invalide.`);
 
         const points = [];
         data.features.forEach(f => {
@@ -399,7 +439,7 @@
     }
 
     // ================================================================
-    // 8. MISE À JOUR DES KPIs
+    // 8. KPIs
     // ================================================================
     function updateDashboard(filterCode) {
       let stats = null;
@@ -500,7 +540,7 @@
     // ================================================================
     function showError(msg) {
       const el = document.getElementById('error-msg');
-      el.textContent = '⚠️ ' + msg;
+      el.innerHTML = '⚠️ ' + msg;
       el.style.display = 'block';
       document.getElementById('loading').style.display = 'none';
     }
