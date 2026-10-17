@@ -48,7 +48,6 @@
       background:#dc3545; color:#fff; padding:12px 28px; border-radius:10px; display:none;
       text-align:center; max-width:85%; box-shadow:0 6px 18px rgba(0,0,0,0.2); font-weight:500;
     }
-    #error-msg code { background:rgba(0,0,0,0.2); padding:2px 6px; border-radius:4px; font-size:0.85em; }
     .leaflet-popup-content { font-size:0.85rem; min-width:220px; max-width:300px; }
     .popup-row { display:flex; justify-content:space-between; padding:2px 0; gap:12px; }
     .popup-row .label { color:#4a5d6e; }
@@ -132,12 +131,11 @@
 
   <script>
     // ================================================================
-    // ⚙️ CONFIGURATION — Modifie cette ligne pour changer de source
+    // ⚙️ CONFIGURATION
     // ================================================================
-    // '' (vide)              → fichiers locaux dans data/
-    // 'https://...r2.dev'    → Cloudflare R2
-    // 'https://cdn.jsdelivr.net/gh/gunout/marseille-data@main'  → jsDelivr
-    const CDN_BASE = '';
+    // GitHub Pages ne sert pas les fichiers LFS → on passe par
+    // media.githubusercontent.com qui sert le contenu réel.
+    const CDN_BASE = 'https://media.githubusercontent.com/media/gunout/marseille-immobilier/main/data';
 
     // ================================================================
     // 1. DONNÉES IMMOBILIÈRES MARSEILLE (statistiques DVF simulées)
@@ -180,7 +178,7 @@
     let transactionLayer = null;
 
     // ================================================================
-    // 4. CHARGEMENT ROBUSTE DES DONNÉES (gzip OU JSON brut OU pointeur LFS)
+    // 4. CHARGEMENT ROBUSTE DES DONNÉES
     // ================================================================
     async function fetchJSON(url) {
       console.log(`📥 Chargement : ${url}`);
@@ -195,12 +193,10 @@
         const bytes = new Uint8Array(buffer);
         const head = bytes.slice(0, 4);
 
-        // Détection du type de fichier
         const isGzip = head[0] === 0x1f && head[1] === 0x8b;
-        const isJson = head[0] === 0x7b || head[0] === 0x5b; // '{' ou '['
-        const isLfsPointer = !isGzip && !isJson; // probablement un pointeur LFS texte
+        const isJson = head[0] === 0x7b || head[0] === 0x5b;
+        const isLfsPointer = !isGzip && !isJson;
 
-        // Cas 1 : GZIP → décompression
         if (isGzip) {
           try {
             const ds = new DecompressionStream('gzip');
@@ -213,7 +209,6 @@
           }
         }
 
-        // Cas 2 : JSON brut → parse direct
         if (isJson) {
           try {
             const text = new TextDecoder().decode(bytes);
@@ -224,13 +219,12 @@
           }
         }
 
-        // Cas 3 : Pointeur LFS → erreur explicite
         if (isLfsPointer) {
           const preview = new TextDecoder().decode(bytes.slice(0, 100));
           console.warn('⚠️ Pointeur LFS détecté :', preview);
           throw new Error(
             'Ce serveur ne sert pas les fichiers Git LFS. ' +
-            'Utilise Cloudflare Pages, ou configure CDN_BASE dans index.html.'
+            'Configure CDN_BASE vers media.githubusercontent.com.'
           );
         }
 
@@ -272,8 +266,7 @@
         document.getElementById('loading').style.display = 'flex';
         document.getElementById('error-msg').style.display = 'none';
 
-        const base = CDN_BASE || 'data';
-        const filename = `${base}/cadastre-${arrondissement}-parcelles.json.gz`;
+        const filename = `${CDN_BASE}/cadastre-${arrondissement}-parcelles.json.gz`;
 
         const data = await fetchJSON(filename);
         if (!data) throw new Error(`Fichier ${filename} introuvable ou invalide.`);
